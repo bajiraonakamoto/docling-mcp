@@ -1,5 +1,8 @@
 """Tools for converting documents into DoclingDocument objects."""
-
+import os
+import json
+from pathlib import Path
+from docling_mcp.docling_cache import get_cache_dir
 import gc
 from typing import Annotated, Any
 
@@ -14,6 +17,7 @@ from docling.datamodel.pipeline_options import (
 from docling.document_converter import DocumentConverter, FormatOption, PdfFormatOption
 from docling_core.types.doc.document import (
     ContentLayer,
+    DoclingDocument
 )
 from docling_core.types.doc.labels import (
     DocItemLabel,
@@ -47,8 +51,52 @@ def is_document_in_local_cache(cache_key: str) -> bool:
 
 
 @mcp.tool()
-def convert_pdf_document_into_json_docling_document_from_uri_path(
-    source: str,
+def list_cached_documents() -> str:
+    """Lists all documents currently available in the local document cache.
+
+    This function retrieves information about all documents stored in the local cache
+    and returns a formatted list with details such as document keys, names, and the
+    number of items in each document.
+
+    Returns:
+        str: A formatted string listing all cached documents with their details.
+
+    Example:
+        list_cached_documents()
+    """
+    if not local_document_cache:
+        return "No documents found in the local cache."
+
+    result = "Documents in local cache:\n\n"
+
+    for doc_key, document in local_document_cache.items():
+        # Get document name
+        doc_name = document.name or "Unnamed Document"
+
+        # Count items in document
+        item_count = len(document.items) if hasattr(document, "items") else 0
+
+        # Find any source annotation
+        source = ""
+        for item in document.items.values() if hasattr(document, "items") else []:
+            if hasattr(item, "text") and item.text and item.text.startswith("source:"):
+                source = item.text
+                break
+
+        # Add to result
+        result += f"* Document Key: {doc_key}\n"
+        result += f"  - Name: {doc_name}\n"
+        result += f"  - Items: {item_count}\n"
+        if source:
+            result += f"  - {source}\n"
+        result += "\n"
+
+    return result
+
+
+@mcp.tool()
+def convert_pdf_to_json(
+        source: str,
 ) -> tuple[bool, str]:
     """Convert a PDF document from a URL or local path and store in local cache.
 
@@ -146,7 +194,7 @@ def convert_pdf_document_into_json_docling_document_from_uri_path(
 
 @mcp.tool()
 def convert_attachments_into_docling_document(
-    pdf_payloads: list[Annotated[bytes, {"media_type": "application/octet-stream"}]],
+        pdf_payloads: list[Annotated[bytes, {"media_type": "application/octet-stream"}]],
 ) -> list[dict[str, Any]]:
     """Process a pdf files attachment from Claude Desktop.
 
@@ -176,3 +224,43 @@ def convert_attachments_into_docling_document(
         )
 
     return results
+
+
+@mcp.tool()
+def reload_local_document_cache_from_dir() -> str:
+    """Reloads the local document cache from cache directory on disk.
+
+    Loads documents from the cache directory and updates the in-memory cache.
+
+    Returns:
+        str: String with results of reload operation.
+    """
+    cache_dir = get_cache_dir()
+    loaded = 0
+    failures = []
+
+    # Limpa o cache em memória
+    local_document_cache.clear()
+
+    for entry in os.scandir(cache_dir):
+        if entry.is_file() and entry.name.endswith(".json"):
+            try:
+                with open(entry.path, "r", encoding="utf-8") as f:
+                    doc_dict = json.load(f)
+                    if hasattr(DoclingDocument, "model_validate"):
+                        doc = DoclingDocument.model_validate(doc_dict)
+                    else:
+                        # fallback para Pydantic v1
+                        doc = DoclingDocument.parse_obj(doc_dict)
+
+                cache_key = entry.name.removesuffix(".json")
+                local_document_cache[cache_key] = doc
+                loaded += 1
+            except Exception as e:
+                failures.append((entry.name, str(e)))
+
+    msg = f"Reload finished: {loaded} document(s) loaded from {cache_dir}."
+    if failures:
+        msg += f" {len(failures)} document(s) failed to load: {failures}"
+    logger.info(msg)
+    return msg

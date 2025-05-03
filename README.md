@@ -36,7 +36,7 @@ Docling MCP is a service that provides tools for document conversion, processing
 Install dependencies
 
 ```sh
-uv sync
+  uv sync
 ```
 
 Install the docling_mcp package
